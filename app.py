@@ -558,7 +558,7 @@ def show_login():
         username = st.text_input("Username", placeholder="admin / creator / user")
         password = st.text_input("Password", type="password", placeholder="Enter password")
 
-        if st.button("Sign In here", use_container_width=True):
+        if st.button("Sign In ", use_container_width=True):
             u = USERS.get(username)
             if u and u["password"] == password:
                 st.session_state.logged_in = True
