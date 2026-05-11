@@ -49,4 +49,5 @@ jobs:
 
           az webapp restart \
             --resource-group "${RESOURCE_GROUP}" \
-            --name "${WEBAPP_NAME}"
+            --name "${WEBAPP_NAME}" 
+            
