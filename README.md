@@ -24,13 +24,13 @@ Mnogram is a **Streamlit media distribution web app** (Instagram-like) designed 
 2. Install dependencies:
 
 ```bash
-pip install -r /home/runner/work/mnogram/mnogram/requirements.txt
+pip install -r requirements.txt
 ```
 
 3. Start the app:
 
 ```bash
-streamlit run /home/runner/work/mnogram/mnogram/app.py
+streamlit run app.py
 ```
 
 4. Open the URL shown by Streamlit (usually `http://localhost:8501`).
