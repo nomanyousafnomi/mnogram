@@ -19,28 +19,16 @@ WORKDIR /app
 # Copy requirements first (layer cache optimisation)
 COPY requirements.txt .
 
-# Install Python packages (minimal set for local/demo)
-RUN pip install --no-cache-dir \
-    streamlit>=1.35.0 \
-    plotly>=5.20.0 \
-    pandas>=2.0.0 \
-    numpy>=1.26.0 \
-    requests>=2.31.0
-
-# Install Azure SDKs (comment out if not using Azure)
-RUN pip install --no-cache-dir \
-    azure-storage-blob>=12.19.0 \
-    azure-cosmos>=4.6.0 \
-    azure-cognitiveservices-vision-computervision>=0.9.0 \
-    msrest>=0.7.1
+# Install Python packages (core + Azure SDKs) from requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app.py .
 
 # Streamlit configuration
-# Streamlit configuration
 RUN mkdir -p /app/.streamlit
 COPY streamlit_config.toml /app/.streamlit/config.toml
+
 # Non-root user for security
 RUN useradd -m -u 1000 appuser && chown -R appuser /app
 USER appuser
