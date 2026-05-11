@@ -1,12 +1,15 @@
-import os
+import secrets as pysecrets
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import streamlit as st
+from PIL import Image, UnidentifiedImageError
 
 APP_TITLE = "Mnogram - Scalable Media Distribution Demo"
 BASE_DIR = Path(__file__).resolve().parent
@@ -15,13 +18,27 @@ MEDIA_DIR = DATA_DIR / "media"
 DB_PATH = DATA_DIR / "mnogram.db"
 MAX_UPLOAD_MB = 10
 PAGE_SIZE = 6
+MAX_VISIBLE_COMMENTS = 20
+DISPLAY_TIMESTAMP_LENGTH = 19
+MIN_RATING = 1
+MAX_RATING = 5
+DEFAULT_RATING = 3
+
+# Coursework demo accounts.
+# In production, replace this with a managed identity provider (e.g., OAuth/Cognito/Azure AD B2C).
+CREATOR1_FALLBACK_PASSWORD = pysecrets.token_urlsafe(12)
+CREATOR2_FALLBACK_PASSWORD = pysecrets.token_urlsafe(12)
+CONSUMER1_FALLBACK_PASSWORD = pysecrets.token_urlsafe(12)
+CONSUMER2_FALLBACK_PASSWORD = pysecrets.token_urlsafe(12)
 
 USERS = {
-    "creator1": {"password": "creator123", "role": "creator"},
-    "creator2": {"password": "creator123", "role": "creator"},
-    "viewer1": {"password": "viewer123", "role": "consumer"},
-    "viewer2": {"password": "viewer123", "role": "consumer"},
+    "creator1": {"password": st.secrets.get("CREATOR1_PASSWORD", CREATOR1_FALLBACK_PASSWORD), "role": "creator"},
+    "creator2": {"password": st.secrets.get("CREATOR2_PASSWORD", CREATOR2_FALLBACK_PASSWORD), "role": "creator"},
+    "viewer1": {"password": st.secrets.get("CONSUMER1_PASSWORD", CONSUMER1_FALLBACK_PASSWORD), "role": "consumer"},
+    "viewer2": {"password": st.secrets.get("CONSUMER2_PASSWORD", CONSUMER2_FALLBACK_PASSWORD), "role": "consumer"},
 }
+
+DB_WRITE_LOCK = threading.Lock()
 
 
 def ensure_dirs() -> None:
@@ -39,8 +56,10 @@ def get_connection() -> sqlite3.Connection:
 
 def init_db() -> None:
     conn = get_connection()
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
     conn.executescript(
-        """
+        f"""
         CREATE TABLE IF NOT EXISTS photos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             creator TEXT NOT NULL,
@@ -65,7 +84,7 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             photo_id INTEGER NOT NULL,
             username TEXT NOT NULL,
-            rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+            rating INTEGER NOT NULL CHECK(rating BETWEEN {MIN_RATING} AND {MAX_RATING}),
             created_at TEXT NOT NULL,
             UNIQUE(photo_id, username),
             FOREIGN KEY(photo_id) REFERENCES photos(id)
@@ -118,7 +137,7 @@ def fetch_photos(search_text: str, location: str, sort_by: str, page: int, page_
         LIMIT ? OFFSET ?
     """
 
-    params.extend([str(page_size), str(offset)])
+    params.extend([page_size, offset])
     return conn.execute(query, params).fetchall()
 
 
@@ -158,6 +177,16 @@ def get_comments(photo_id: int) -> List[sqlite3.Row]:
 
 
 @st.cache_data(show_spinner=False, ttl=30)
+def get_user_rating(photo_id: int, username: str) -> Optional[int]:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT rating FROM ratings WHERE photo_id = ? AND username = ?",
+        (photo_id, username),
+    ).fetchone()
+    return int(row["rating"]) if row else None
+
+
+@st.cache_data(show_spinner=False, ttl=30)
 def get_stats() -> Dict[str, int]:
     conn = get_connection()
     stats = {
@@ -172,7 +201,12 @@ def clear_cached_queries() -> None:
     fetch_photos.clear()
     count_photos.clear()
     get_comments.clear()
+    get_user_rating.clear()
     get_stats.clear()
+
+
+def format_timestamp_for_display(raw_value: str) -> str:
+    return raw_value[:DISPLAY_TIMESTAMP_LENGTH].replace("T", " ")
 
 
 def login_card() -> None:
@@ -182,20 +216,26 @@ def login_card() -> None:
 
     if st.button("Sign in", use_container_width=True):
         account = USERS.get(username)
-        if account and account["password"] == password:
+        provided_password = str(password).encode("utf-8")
+        expected_password = str(account["password"]).encode("utf-8") if account else b""
+        if account and pysecrets.compare_digest(provided_password, expected_password):
             st.session_state["user"] = username
             st.session_state["role"] = account["role"]
             st.success(f"Logged in as {username} ({account['role']})")
             st.rerun()
-        st.error("Invalid credentials")
+        else:
+            # Keep generic failure messaging to avoid username enumeration.
+            st.error("Invalid credentials")
 
     with st.expander("Demo accounts"):
-        st.markdown(
-            "- Creator: `creator1 / creator123`\\n"
-            "- Creator: `creator2 / creator123`\\n"
-            "- Consumer: `viewer1 / viewer123`\\n"
-            "- Consumer: `viewer2 / viewer123`"
+        lines = []
+        for name, details in USERS.items():
+            label = "Creator" if details["role"] == "creator" else "Consumer"
+            lines.append(f"- {label}: `{name}`")
+        lines.append(
+            "- Passwords are loaded from Streamlit secrets and are not displayed in plain text."
         )
+        st.markdown("\n".join(lines))
 
 
 def save_upload(uploaded_file) -> Optional[str]:
@@ -204,7 +244,10 @@ def save_upload(uploaded_file) -> Optional[str]:
 
     file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
     if file_size_mb > MAX_UPLOAD_MB:
-        st.error(f"File too large ({file_size_mb:.2f} MB). Max size is {MAX_UPLOAD_MB} MB.")
+        st.error(
+            f"File too large ({file_size_mb:.2f} MB). "
+            f"Max size is {MAX_UPLOAD_MB} MB. Please compress the image or choose a smaller file."
+        )
         return None
 
     suffix = Path(uploaded_file.name).suffix.lower()
@@ -212,9 +255,16 @@ def save_upload(uploaded_file) -> Optional[str]:
         st.error("Only PNG, JPG, JPEG, and WEBP files are supported.")
         return None
 
-    safe_name = f"{uuid.uuid4().hex}{suffix}"
+    file_bytes = uploaded_file.getvalue()
+    try:
+        Image.open(BytesIO(file_bytes)).verify()
+    except (UnidentifiedImageError, OSError):
+        st.error("The uploaded file content is not a valid image.")
+        return None
+
+    safe_name = f"{time.time_ns()}_{uuid.uuid4().hex}{suffix}"
     target = MEDIA_DIR / safe_name
-    target.write_bytes(uploaded_file.getvalue())
+    target.write_bytes(file_bytes)
     return str(target)
 
 
@@ -239,49 +289,52 @@ def creator_view(user: str) -> None:
             st.error("A valid image upload is required.")
             return
 
-        conn = get_connection()
-        conn.execute(
-            """
-            INSERT INTO photos (creator, title, caption, location, people, image_path, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user,
-                title.strip(),
-                caption.strip(),
-                location.strip(),
-                people.strip(),
-                saved_path,
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        conn.commit()
+        with DB_WRITE_LOCK:
+            conn = get_connection()
+            conn.execute(
+                """
+                INSERT INTO photos (creator, title, caption, location, people, image_path, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user,
+                    title.strip(),
+                    caption.strip(),
+                    location.strip(),
+                    people.strip(),
+                    saved_path,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
         clear_cached_queries()
         st.success("Photo published.")
 
 
 def add_comment(photo_id: int, username: str, comment: str) -> None:
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO comments (photo_id, username, comment, created_at) VALUES (?, ?, ?, ?)",
-        (photo_id, username, comment.strip(), datetime.now(timezone.utc).isoformat()),
-    )
-    conn.commit()
+    with DB_WRITE_LOCK:
+        conn = get_connection()
+        conn.execute(
+            "INSERT INTO comments (photo_id, username, comment, created_at) VALUES (?, ?, ?, ?)",
+            (photo_id, username, comment.strip(), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
     clear_cached_queries()
 
 
 def add_or_update_rating(photo_id: int, username: str, rating: int) -> None:
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO ratings (photo_id, username, rating, created_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(photo_id, username)
-        DO UPDATE SET rating=excluded.rating, created_at=excluded.created_at
-        """,
-        (photo_id, username, rating, datetime.now(timezone.utc).isoformat()),
-    )
-    conn.commit()
+    with DB_WRITE_LOCK:
+        conn = get_connection()
+        conn.execute(
+            """
+            INSERT INTO ratings (photo_id, username, rating, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(photo_id, username)
+            DO UPDATE SET rating=excluded.rating, created_at=excluded.created_at
+            """,
+            (photo_id, username, rating, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
     clear_cached_queries()
 
 
@@ -314,7 +367,7 @@ def consumer_view(user: str) -> None:
             st.markdown(f"### {photo['title']}")
             st.caption(
                 f"by {photo['creator']} | {photo['location'] or 'Unknown location'} | "
-                f"{photo['created_at'][:19].replace('T', ' ')}"
+                f"{format_timestamp_for_display(photo['created_at'])}"
             )
             st.image(photo["image_path"], use_container_width=True)
             if photo["caption"]:
@@ -324,16 +377,17 @@ def consumer_view(user: str) -> None:
 
             st.write(
                 f"⭐ {float(photo['avg_rating']):.2f} avg ({photo['rating_count']} ratings)"
-                f" · �� {photo['comment_count']} comments"
+                f" · 💬 {photo['comment_count']} comments"
             )
 
             c1, c2 = st.columns([1, 2])
             with c1:
+                current_rating = get_user_rating(photo["id"], user) or DEFAULT_RATING
                 rating = st.slider(
                     "Rate",
-                    1,
-                    5,
-                    3,
+                    MIN_RATING,
+                    MAX_RATING,
+                    current_rating,
                     key=f"rating_{photo['id']}",
                     help="1 = poor, 5 = excellent",
                 )
@@ -355,8 +409,8 @@ def consumer_view(user: str) -> None:
             comments = get_comments(photo["id"])
             with st.expander(f"View comments ({len(comments)})"):
                 if comments:
-                    for item in comments[:20]:
-                        ts = item["created_at"][:19].replace("T", " ")
+                    for item in comments[:MAX_VISIBLE_COMMENTS]:
+                        ts = format_timestamp_for_display(item["created_at"])
                         st.markdown(f"**{item['username']}** ({ts}): {item['comment']}")
                 else:
                     st.caption("No comments yet")

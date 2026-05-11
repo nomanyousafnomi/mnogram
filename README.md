@@ -37,10 +37,9 @@ streamlit run app.py
 
 ## Demo accounts
 
-- Creator: `creator1 / creator123`
-- Creator: `creator2 / creator123`
-- Consumer: `viewer1 / viewer123`
-- Consumer: `viewer2 / viewer123`
+- Usernames are fixed: `creator1`, `creator2`, `viewer1`, `viewer2`.
+- Passwords are read from Streamlit secrets (`CREATOR1_PASSWORD`, `CREATOR2_PASSWORD`, `CONSUMER1_PASSWORD`, `CONSUMER2_PASSWORD`).
+- If secrets are not set, secure random fallback passwords are generated at runtime and shown in the app’s **Demo accounts** expander.
 
 ## Rubric alignment notes (distinction-focused evidence)
 
