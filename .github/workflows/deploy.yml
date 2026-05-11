@@ -1,4 +1,4 @@
-name: Build and deploy (App Service container + ACR)
+name: Build and deploy (self-hosted runner)
 
 on:
   push:
@@ -6,47 +6,47 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   ACR_LOGIN_SERVER: mnogramacr6632.azurecr.io
-  IMAGE_NAME: mnogram
+  IMAGE_NAME: mno-gram
   WEBAPP_NAME: mnogram-6632-nomi
+  RESOURCE_GROUP: mnogram-rg
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Debug (safe)
+      - name: Build image
         run: |
-          echo "Registry: $ACR_LOGIN_SERVER"
-          echo "ACR_USERNAME length: ${#ACR_USERNAME}"
-          echo "ACR_PASSWORD length: ${#ACR_PASSWORD}"
-        env:
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          docker build -t ${IMAGE_NAME}:latest .
 
-      - name: Docker login to ACR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Login to ACR (uses Azure login on this machine)
+        run: |
+          az acr login -n mnogramacr6632
 
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+      - name: Tag + push image
+        run: |
+          docker tag ${IMAGE_NAME}:latest ${ACR_LOGIN_SERVER}/mnogram:${GITHUB_SHA}
+          docker tag ${IMAGE_NAME}:latest ${ACR_LOGIN_SERVER}/mnogram:latest
+          docker push ${ACR_LOGIN_SERVER}/mnogram:${GITHUB_SHA}
+          docker push ${ACR_LOGIN_SERVER}/mnogram:latest
 
-      - name: Deploy container image to Azure Web App
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ env.WEBAPP_NAME }}
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          images: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+      - name: Update Web App to new image + restart
+        run: |
+          az webapp config container set \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}" \
+            --docker-custom-image-name "${ACR_LOGIN_SERVER}/mnogram:${GITHUB_SHA}" \
+            --docker-registry-server-url "https://${ACR_LOGIN_SERVER}"
+
+          az webapp config appsettings set \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}" \
+            --settings WEBSITES_PORT=8501
+
+          az webapp restart \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}"
