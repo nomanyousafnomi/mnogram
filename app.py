@@ -40,11 +40,14 @@ import numpy as np
 # ─────────────────────────────────────────────────────────────────────
 #  AZURE CONFIGURATION  (paste your keys here)
 # ─────────────────────────────────────────────────────────────────────
-AZURE_STORAGE_CONNECTION_STRING = "PASTE_HERE"  # Azure Portal → Storage Account → Access Keys
-AZURE_COSMOS_URI                = "PASTE_HERE"  # Azure Portal → Cosmos DB → Keys → URI
-AZURE_COSMOS_KEY                = "PASTE_HERE"  # Azure Portal → Cosmos DB → Keys → Primary Key
-AZURE_COGNITIVE_KEY             = "PASTE_HERE"  # Azure Portal → Cognitive Services → Keys
-AZURE_COGNITIVE_ENDPOINT        = "PASTE_HERE"  # Azure Portal → Cognitive Services → Endpoint
+# ─────────────────────────────────────────────────────────────────────
+#  AZURE CONFIGURATION (read from environment variables)
+# ─────────────────────────────────────────────────────────────────────
+AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+AZURE_COSMOS_URI                = os.environ.get("AZURE_COSMOS_URI", "")
+AZURE_COSMOS_KEY                = os.environ.get("AZURE_COSMOS_KEY", "")
+AZURE_COGNITIVE_KEY             = os.environ.get("AZURE_COGNITIVE_KEY", "")
+AZURE_COGNITIVE_ENDPOINT        = os.environ.get("AZURE_COGNITIVE_ENDPOINT", "")
 
 # Container/DB names
 BLOB_CONTAINER   = "mnogram-media"
@@ -52,10 +55,7 @@ COSMOS_DATABASE  = "mnogram-db"
 COSMOS_CONTAINER = "media-items"
 
 # Detect whether real Azure creds are present
-USE_AZURE = (
-    AZURE_STORAGE_CONNECTION_STRING != "PASTE_HERE"
-    and AZURE_COSMOS_URI != "PASTE_HERE"
-)
+USE_AZURE = bool(AZURE_STORAGE_CONNECTION_STRING) and bool(AZURE_COSMOS_URI) and bool(AZURE_COSMOS_KEY)
 
 # ─────────────────────────────────────────────────────────────────────
 #  LOCAL SQLITE FALLBACK
