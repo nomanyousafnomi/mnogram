@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   ACR_LOGIN_SERVER: mnogramacr6632.azurecr.io
   IMAGE_NAME: mnogram
   WEBAPP_NAME: mnogram-6632-nomi
@@ -17,6 +18,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Debug (safe)
+        run: |
+          echo "Registry: $ACR_LOGIN_SERVER"
+          echo "ACR_USERNAME length: ${#ACR_USERNAME}"
+          echo "ACR_PASSWORD length: ${#ACR_PASSWORD}"
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
 
       - name: Docker login to ACR
         uses: docker/login-action@v3
